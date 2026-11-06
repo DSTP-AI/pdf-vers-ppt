@@ -1,4 +1,5 @@
 pymupdf>=1.24
 python-pptx==1.0.2
 pillow>=10
+pyside6-essentials>=6.7
 pyinstaller>=6.10

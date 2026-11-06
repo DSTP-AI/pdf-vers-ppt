@@ -1,171 +1,319 @@
-"""PDF vers PPT - interface graphique (Mac / Windows)."""
+"""PDF vers PPT - interface graphique (Mac / Windows).
+
+Glissez un ou plusieurs PDF dans la fenêtre (ou sur l'icône de l'app sous Mac,
+ou sur le .exe sous Windows). Chaque page devient une diapositive image en
+qualité maximale (600 dpi, PNG sans perte). Le .pptx est enregistré à côté du PDF.
+"""
 import os
+import subprocess
 import sys
-import threading
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import (QColor, QFont, QIcon, QLinearGradient, QPainter, QPainterPath,
+                           QPen, QPixmap, QRadialGradient)
+from PySide6.QtWidgets import (QApplication, QFileDialog, QGraphicsDropShadowEffect,
+                               QLabel, QProgressBar, QPushButton, QVBoxLayout, QWidget)
 
 from converter import convert
 
 APP_NAME = "PDF vers PPT"
-QUALITES = {
-    "Haute (300 dpi)": 300,
-    "Très haute (400 dpi)": 400,
-    "Maximale (600 dpi)": 600,
-    "Standard (200 dpi)": 200,
-}
-FORMATS = {
-    "PNG (sans perte, fichier plus lourd)": "png",
-    "JPEG qualité 95 (fichier plus léger)": "jpeg",
-}
 
 
-class App(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title(APP_NAME)
-        self.geometry("560x400")
-        self.minsize(480, 360)
-        self.files = []
-        self.cancel_flag = False
-        self.working = False
+def resource(name):
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, "assets", name)
 
-        pad = {"padx": 12, "pady": 6}
-        ttk.Label(self, text=APP_NAME, font=("Helvetica", 18, "bold")).pack(**pad)
-        ttk.Label(self, text="Chaque page du PDF devient une diapositive image, "
-                             "sans aucune modification du contenu.",
-                  wraplength=520).pack(**pad)
 
-        ttk.Button(self, text="Choisir un ou plusieurs PDF…",
-                   command=self.choose).pack(**pad)
-        self.files_var = tk.StringVar(value="Aucun fichier sélectionné")
-        ttk.Label(self, textvariable=self.files_var, wraplength=520,
-                  foreground="#555").pack(**pad)
-
-        opts = ttk.Frame(self)
-        opts.pack(**pad)
-        ttk.Label(opts, text="Qualité :").grid(row=0, column=0, sticky="e")
-        self.q = ttk.Combobox(opts, values=list(QUALITES), state="readonly", width=32)
-        self.q.current(0)
-        self.q.grid(row=0, column=1, padx=6, pady=3)
-        ttk.Label(opts, text="Format image :").grid(row=1, column=0, sticky="e")
-        self.f = ttk.Combobox(opts, values=list(FORMATS), state="readonly", width=32)
-        self.f.current(0)
-        self.f.grid(row=1, column=1, padx=6, pady=3)
-
-        self.go = ttk.Button(self, text="Convertir en PowerPoint", command=self.start)
-        self.go.pack(**pad)
-        self.bar = ttk.Progressbar(self, length=480, mode="determinate")
-        self.bar.pack(**pad)
-        self.status = tk.StringVar(value="")
-        ttk.Label(self, textvariable=self.status).pack(**pad)
-
-        self.protocol("WM_DELETE_WINDOW", self.on_close)
-
-    def choose(self):
-        if self.working:
-            return
-        paths = filedialog.askopenfilenames(
-            title="Choisir des PDF", filetypes=[("PDF", "*.pdf *.PDF")])
-        if paths:
-            self.files = list(paths)
-            names = [os.path.basename(p) for p in self.files]
-            txt = ", ".join(names[:3]) + (f" (+{len(names) - 3})" if len(names) > 3 else "")
-            self.files_var.set(f"{len(names)} fichier(s) : {txt}")
-
-    def start(self):
-        if self.working:
-            self.cancel_flag = True
-            self.status.set("Annulation…")
-            return
-        if not self.files:
-            messagebox.showinfo(APP_NAME, "Choisissez d'abord un fichier PDF.")
-            return
-        outdir = None
-        if len(self.files) == 1:
-            out = filedialog.asksaveasfilename(
-                title="Enregistrer le PowerPoint",
-                defaultextension=".pptx",
-                initialdir=os.path.dirname(self.files[0]),
-                initialfile=os.path.splitext(os.path.basename(self.files[0]))[0] + ".pptx",
-                filetypes=[("PowerPoint", "*.pptx")])
-            if not out:
-                return
-            jobs = [(self.files[0], out)]
-        else:
-            outdir = filedialog.askdirectory(
-                title="Dossier où enregistrer les PowerPoint",
-                initialdir=os.path.dirname(self.files[0]))
-            if not outdir:
-                return
-            jobs = [(p, os.path.join(outdir, os.path.splitext(os.path.basename(p))[0] + ".pptx"))
-                    for p in self.files]
-
-        self.working = True
-        self.cancel_flag = False
-        self.go.config(text="Annuler")
-        dpi = QUALITES[self.q.get()]
-        fmt = FORMATS[self.f.get()]
-        threading.Thread(target=self.run, args=(jobs, dpi, fmt), daemon=True).start()
-
-    def run(self, jobs, dpi, fmt):
-        done, errors = [], []
-        for n, (src, dst) in enumerate(jobs, 1):
-            name = os.path.basename(src)
-
-            def prog(i, total, n=n, name=name):
-                self.after(0, self.update_progress, i, total,
-                           f"Fichier {n}/{len(jobs)} - {name} : page {i}/{total}")
-            try:
-                convert(src, dst, dpi=dpi, image_format=fmt, progress=prog,
-                        cancel=lambda: self.cancel_flag)
-                done.append(dst)
-            except InterruptedError:
-                break
-            except Exception as e:  # noqa: BLE001
-                errors.append(f"{name} : {e}")
-        self.after(0, self.finish, done, errors)
-
-    def update_progress(self, i, total, text):
-        self.bar["maximum"] = total
-        self.bar["value"] = i
-        self.status.set(text)
-
-    def finish(self, done, errors):
-        self.working = False
-        self.go.config(text="Convertir en PowerPoint")
-        if self.cancel_flag:
-            self.status.set("Conversion annulée.")
-            return
-        self.status.set(f"Terminé : {len(done)} fichier(s) créé(s).")
-        msg = ""
-        if done:
-            msg += "PowerPoint créé(s) :\n" + "\n".join(done)
-        if errors:
-            msg += "\n\nErreurs :\n" + "\n".join(errors)
-        (messagebox.showwarning if errors else messagebox.showinfo)(APP_NAME, msg)
-        if done and not errors:
-            reveal(done[0])
-
-    def on_close(self):
-        self.cancel_flag = True
-        self.destroy()
+def is_pdf(path):
+    return path.lower().endswith(".pdf") and os.path.isfile(path)
 
 
 def reveal(path):
     try:
         if sys.platform == "darwin":
-            os.system(f'open -R "{path}"')
+            subprocess.Popen(["open", "-R", path])
         elif os.name == "nt":
-            os.system(f'explorer /select,"{os.path.normpath(path)}"')
+            subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
+        else:
+            subprocess.Popen(["xdg-open", os.path.dirname(path)])
     except Exception:  # noqa: BLE001
         pass
 
 
+class Worker(QThread):
+    progress = Signal(int, int, str)        # page, total, nom
+    file_done = Signal(str, str)            # pdf, pptx
+    file_error = Signal(str, str)           # pdf, message
+
+    def __init__(self, files):
+        super().__init__()
+        self.files = files
+
+    def run(self):
+        for src in self.files:
+            name = os.path.basename(src)
+            try:
+                out = convert(src, progress=lambda i, n, name=name: self.progress.emit(i, n, name))
+                self.file_done.emit(src, out)
+            except Exception as e:  # noqa: BLE001
+                self.file_error.emit(src, str(e))
+
+
+class DropCard(QWidget):
+    """Carte en verre dépoli : zone où déposer les PDF."""
+    clicked = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.hover = False
+        self.setMinimumSize(420, 300)
+        self.setCursor(Qt.PointingHandCursor)
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(60)
+        shadow.setOffset(0, 18)
+        shadow.setColor(QColor(120, 40, 0, 70))
+        self.setGraphicsEffect(shadow)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(32, 36, 32, 30)
+        lay.setSpacing(10)
+        self.icon = QLabel(alignment=Qt.AlignCenter)
+        pm = QPixmap(resource("icon.png"))
+        if not pm.isNull():
+            self.icon.setPixmap(pm.scaled(120, 120, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self.title = QLabel("Déposez vos PDF ici", alignment=Qt.AlignCenter)
+        self.title.setObjectName("title")
+        self.sub = QLabel("ou cliquez pour choisir un fichier", alignment=Qt.AlignCenter)
+        self.sub.setObjectName("sub")
+        self.bar = QProgressBar()
+        self.bar.setTextVisible(False)
+        self.bar.setFixedHeight(8)
+        self.bar.hide()
+        self.status = QLabel("", alignment=Qt.AlignCenter)
+        self.status.setObjectName("status")
+        self.status.setWordWrap(True)
+        self.btn = QPushButton("Afficher le PowerPoint")
+        self.btn.setObjectName("reveal")
+        self.btn.setCursor(Qt.PointingHandCursor)
+        self.btn.hide()
+        lay.addStretch(1)
+        lay.addWidget(self.icon)
+        lay.addSpacing(6)
+        lay.addWidget(self.title)
+        lay.addWidget(self.sub)
+        lay.addSpacing(8)
+        lay.addWidget(self.bar)
+        lay.addWidget(self.status)
+        lay.addWidget(self.btn, alignment=Qt.AlignCenter)
+        lay.addStretch(1)
+
+    def set_hover(self, on):
+        self.hover = on
+        self.update()
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton and not self.btn.underMouse():
+            self.clicked.emit()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        path = QPainterPath()
+        path.addRoundedRect(r, 30, 30)
+        # verre : blanc translucide + reflet en haut
+        g = QLinearGradient(r.topLeft(), r.bottomLeft())
+        a = 150 if self.hover else 105
+        g.setColorAt(0, QColor(255, 255, 255, a + 60))
+        g.setColorAt(0.5, QColor(255, 255, 255, a))
+        g.setColorAt(1, QColor(255, 255, 255, a - 25))
+        p.fillPath(path, g)
+        # liseré lumineux
+        rim = QLinearGradient(r.topLeft(), r.bottomRight())
+        rim.setColorAt(0, QColor(255, 255, 255, 230))
+        rim.setColorAt(0.5, QColor(255, 255, 255, 90))
+        rim.setColorAt(1, QColor(255, 255, 255, 170))
+        p.setPen(QPen(rim, 1.6))
+        p.drawPath(path)
+        if self.hover:
+            inner = QPainterPath()
+            inner.addRoundedRect(r.adjusted(14, 14, -14, -14), 22, 22)
+            pen = QPen(QColor(232, 86, 30, 200), 2, Qt.DashLine)
+            pen.setDashPattern([6, 5])
+            p.setPen(pen)
+            p.drawPath(inner)
+
+
+class Window(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle(APP_NAME)
+        self.setWindowIcon(QIcon(resource("icon.png")))
+        self.resize(560, 460)
+        self.setMinimumSize(480, 400)
+        self.setAcceptDrops(True)
+        self.queue, self.done, self.errors = [], [], []
+        self.worker = None
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(34, 34, 34, 22)
+        self.card = DropCard()
+        self.card.clicked.connect(self.choose)
+        self.card.btn.clicked.connect(self.reveal_last)
+        lay.addWidget(self.card, 1)
+        foot = QLabel("Qualité maximale · 600 dpi · images sans perte · enregistré à côté du PDF",
+                      alignment=Qt.AlignCenter)
+        foot.setObjectName("foot")
+        lay.addSpacing(12)
+        lay.addWidget(foot)
+
+        self.setStyleSheet("""
+            QLabel { background: transparent; color: #2b1a10; }
+            QLabel#title { font-size: 24px; font-weight: 700; color: #2b1408; }
+            QLabel#sub { font-size: 14px; color: rgba(60,30,10,0.65); }
+            QLabel#status { font-size: 13px; color: #3a2010; }
+            QLabel#foot { font-size: 11px; color: rgba(255,255,255,0.92); }
+            QProgressBar { background: rgba(255,255,255,0.55); border: none; border-radius: 4px; }
+            QProgressBar::chunk { border-radius: 4px;
+                background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #ff9a3c, stop:1 #e4481a); }
+            QPushButton#reveal { background: rgba(255,255,255,0.75); color: #c2410c;
+                border: 1px solid rgba(255,255,255,0.95); border-radius: 14px;
+                padding: 7px 18px; font-size: 13px; font-weight: 600; }
+            QPushButton#reveal:hover { background: rgba(255,255,255,0.95); }
+        """)
+
+    # --- fond "liquide" : dégradé orange avec bulles de lumière
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect())
+        g = QLinearGradient(r.topLeft(), r.bottomRight())
+        g.setColorAt(0, QColor("#ffb062"))
+        g.setColorAt(0.55, QColor("#f2702b"))
+        g.setColorAt(1, QColor("#d8431c"))
+        p.fillRect(r, g)
+        for cx, cy, rad, col in ((0.15, 0.12, 0.55, QColor(255, 236, 200, 150)),
+                                 (0.95, 0.85, 0.60, QColor(255, 90, 120, 90)),
+                                 (0.85, 0.10, 0.40, QColor(255, 255, 255, 70))):
+            rg = QRadialGradient(QPointF(r.width() * cx, r.height() * cy), max(r.width(), r.height()) * rad)
+            rg.setColorAt(0, col)
+            c2 = QColor(col); c2.setAlpha(0)
+            rg.setColorAt(1, c2)
+            p.fillRect(r, rg)
+
+    # --- glisser-déposer
+    def dragEnterEvent(self, e):
+        if any(is_pdf(u.toLocalFile()) for u in e.mimeData().urls()):
+            e.acceptProposedAction()
+            self.card.set_hover(True)
+
+    def dragLeaveEvent(self, _):
+        self.card.set_hover(False)
+
+    def dropEvent(self, e):
+        self.card.set_hover(False)
+        self.add_files([u.toLocalFile() for u in e.mimeData().urls()])
+
+    def choose(self):
+        if self.worker:
+            return
+        paths, _ = QFileDialog.getOpenFileNames(self, "Choisir des PDF", os.path.expanduser("~"),
+                                                "PDF (*.pdf *.PDF)")
+        self.add_files(paths)
+
+    def add_files(self, paths):
+        pdfs = [p for p in paths if is_pdf(p)]
+        if not pdfs:
+            return
+        self.queue.extend(pdfs)
+        if not self.worker:
+            self.done, self.errors = [], []
+            self.start()
+
+    def start(self):
+        files, self.queue = self.queue, []
+        self.card.btn.hide()
+        self.card.bar.show()
+        self.card.bar.setValue(0)
+        self.card.title.setText("Conversion en cours…")
+        self.card.sub.setText(f"{len(files)} fichier(s)" if len(files) > 1 else os.path.basename(files[0]))
+        self.worker = Worker(files)
+        self.worker.progress.connect(self.on_progress)
+        self.worker.file_done.connect(lambda s, o: self.done.append(o))
+        self.worker.file_error.connect(lambda s, m: self.errors.append(f"{os.path.basename(s)} : {m}"))
+        self.worker.finished.connect(self.on_finished)
+        self.worker.start()
+
+    def on_progress(self, i, n, name):
+        self.card.bar.setMaximum(n)
+        self.card.bar.setValue(i)
+        self.card.status.setText(f"{name} — page {i} sur {n}")
+
+    def on_finished(self):
+        self.worker = None
+        if self.queue:
+            self.start()
+            return
+        self.card.bar.hide()
+        if self.done:
+            self.card.title.setText("C'est prêt ✓")
+            names = ", ".join(os.path.basename(p) for p in self.done[:3])
+            more = f" (+{len(self.done) - 3})" if len(self.done) > 3 else ""
+            self.card.sub.setText(f"{names}{more}")
+            self.card.status.setText("Enregistré à côté du PDF. Déposez d'autres PDF pour continuer.")
+            self.card.btn.show()
+        else:
+            self.card.title.setText("Déposez vos PDF ici")
+            self.card.sub.setText("ou cliquez pour choisir un fichier")
+            self.card.status.setText("")
+        if self.errors:
+            self.card.status.setText("Erreur : " + " / ".join(self.errors))
+
+    def reveal_last(self):
+        if self.done:
+            reveal(self.done[-1])
+
+
+class App(QApplication):
+    """Reçoit aussi les PDF déposés sur l'icône de l'app (Dock / Finder sous Mac)."""
+
+    def __init__(self, argv):
+        super().__init__(argv)
+        self.window = None
+        self.pending = []
+
+    def event(self, e):
+        if e.type() == QEvent.FileOpen:
+            path = e.file()
+            if self.window:
+                self.window.add_files([path])
+            else:
+                self.pending.append(path)
+            return True
+        return super().event(e)
+
+
+def main():
+    # Mode ligne de commande : app fichier.pdf [...] --cli
+    args = [a for a in sys.argv[1:] if not a.startswith("-psn")]
+    if "--cli" in args:
+        for a in args:
+            if is_pdf(a):
+                print(convert(a))
+        return
+    app = App(sys.argv)
+    app.setApplicationName(APP_NAME)
+    app.setFont(QFont("SF Pro Text" if sys.platform == "darwin" else "Segoe UI", 13))
+    app.setWindowIcon(QIcon(resource("icon.png")))
+    win = Window()
+    app.window = win
+    win.show()
+    # PDF glissés sur le .exe (Windows) ou sur l'icône (Mac)
+    files = [a for a in args if is_pdf(a)] + app.pending
+    if files:
+        QTimer.singleShot(200, lambda: win.add_files(files))
+    sys.exit(app.exec())
+
+
 if __name__ == "__main__":
-    # Mode ligne de commande : app.py fichier.pdf [sortie.pptx]
-    if len(sys.argv) > 1 and sys.argv[1].lower().endswith(".pdf"):
-        out = convert(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else None)
-        print(out)
-    else:
-        App().mainloop()
+    main()

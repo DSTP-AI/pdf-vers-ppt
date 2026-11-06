@@ -7,6 +7,6 @@ call .venv-build\Scripts\activate.bat
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 rmdir /s /q build dist 2>nul
-pyinstaller --noconfirm --onefile --windowed --name "PDF vers PPT" app.py
+pyinstaller --noconfirm --onefile --windowed --name "PDF vers PPT" --icon assets\icon.ico --add-data "assets;assets" app.py
 echo OK : dist\PDF vers PPT.exe
 pause

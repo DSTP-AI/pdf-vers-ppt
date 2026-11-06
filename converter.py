@@ -24,7 +24,21 @@ def _slide_size(width_pt, height_pt):
     return int(w * scale), int(h * scale)
 
 
-def convert(pdf_path, pptx_path=None, dpi=300, image_format="png",
+DPI = 600  # qualité maximale, image PNG sans perte
+
+
+def output_path_for(pdf_path):
+    """Chemin du .pptx à côté du PDF, sans écraser un fichier existant."""
+    base = os.path.splitext(pdf_path)[0]
+    out = base + ".pptx"
+    n = 2
+    while os.path.exists(out):
+        out = f"{base} ({n}).pptx"
+        n += 1
+    return out
+
+
+def convert(pdf_path, pptx_path=None, dpi=DPI, image_format="png",
             jpeg_quality=95, progress=None, cancel=None):
     """Convertit pdf_path en pptx. Retourne le chemin du .pptx créé.
 
@@ -32,7 +46,7 @@ def convert(pdf_path, pptx_path=None, dpi=300, image_format="png",
     cancel() -> True interrompt la conversion.
     """
     if pptx_path is None:
-        pptx_path = os.path.splitext(pdf_path)[0] + ".pptx"
+        pptx_path = output_path_for(pdf_path)
 
     doc = fitz.open(pdf_path)
     if doc.needs_pass:
