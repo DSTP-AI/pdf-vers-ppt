@@ -11,7 +11,7 @@ import sys
 from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import (QColor, QFont, QIcon, QLinearGradient, QPainter, QPainterPath,
                            QPen, QPixmap, QRadialGradient)
-from PySide6.QtWidgets import (QApplication, QFileDialog, QGraphicsDropShadowEffect,
+from PySide6.QtWidgets import (QApplication, QFileDialog,
                                QLabel, QProgressBar, QPushButton, QVBoxLayout, QWidget)
 
 from converter import convert
@@ -22,6 +22,48 @@ APP_NAME = "PDF vers PPT"
 def resource(name):
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, "assets", name)
+
+
+LOG = os.path.join(os.path.expanduser("~"), ".pdf-vers-ppt.log")
+
+
+def log(msg):
+    try:
+        with open(LOG, "a", encoding="utf-8") as f:
+            f.write(msg + "\n")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def resolve_path(path):
+    """macOS peut fournir des URL de référence (/.file/id=...) : on les convertit."""
+    if sys.platform == "darwin" and path.startswith("/.file/id="):
+        try:
+            out = subprocess.run(
+                ["osascript", "-e", f'POSIX path of (POSIX file "{path}" as alias)'],
+                capture_output=True, text=True, timeout=5).stdout.strip()
+            if out:
+                return out
+        except Exception:  # noqa: BLE001
+            pass
+    return path
+
+
+def paths_from_mime(md):
+    paths = []
+    for u in md.urls():
+        p = u.toLocalFile() or u.path()
+        if p:
+            paths.append(resolve_path(p))
+    if not paths and md.hasText():
+        from urllib.parse import unquote, urlparse
+        for line in md.text().splitlines():
+            line = line.strip()
+            if line.startswith("file://"):
+                paths.append(resolve_path(unquote(urlparse(line).path)))
+            elif line:
+                paths.append(line)
+    return paths
 
 
 def is_pdf(path):
@@ -68,11 +110,6 @@ class DropCard(QWidget):
         self.hover = False
         self.setMinimumSize(420, 300)
         self.setCursor(Qt.PointingHandCursor)
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(60)
-        shadow.setOffset(0, 18)
-        shadow.setColor(QColor(120, 40, 0, 70))
-        self.setGraphicsEffect(shadow)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(32, 36, 32, 30)
@@ -181,6 +218,7 @@ class Window(QWidget):
                 padding: 7px 18px; font-size: 13px; font-weight: 600; }
             QPushButton#reveal:hover { background: rgba(255,255,255,0.95); }
         """)
+        self.enable_drops()
 
     # --- fond "liquide" : dégradé orange avec bulles de lumière
     def paintEvent(self, _):
@@ -200,19 +238,62 @@ class Window(QWidget):
             c2 = QColor(col); c2.setAlpha(0)
             rg.setColorAt(1, c2)
             p.fillRect(r, rg)
+        # ombre douce sous la carte en verre
+        cr = QRectF(self.card.geometry())
+        for i in range(14):
+            sp = QPainterPath()
+            sp.addRoundedRect(cr.adjusted(-i, -i + 16, i, i + 16), 30 + i, 30 + i)
+            p.fillPath(sp, QColor(110, 30, 0, 5))
 
-    # --- glisser-déposer
-    def dragEnterEvent(self, e):
-        if any(is_pdf(u.toLocalFile()) for u in e.mimeData().urls()):
-            e.acceptProposedAction()
+    # --- glisser-déposer : la fenêtre et tous ses éléments acceptent le dépôt
+    def enable_drops(self):
+        self.setAcceptDrops(True)
+        for w in self.findChildren(QWidget):
+            w.setAcceptDrops(True)
+            w.installEventFilter(self)
+
+    def eventFilter(self, obj, e):
+        t = e.type()
+        if t in (QEvent.DragEnter, QEvent.DragMove):
+            self.on_drag(e)
+            return True
+        if t == QEvent.DragLeave:
+            self.card.set_hover(False)
+            return True
+        if t == QEvent.Drop:
+            self.on_drop(e)
+            return True
+        return super().eventFilter(obj, e)
+
+    def on_drag(self, e):
+        if e.mimeData().hasUrls() or e.mimeData().hasText():
+            e.setDropAction(Qt.CopyAction)
+            e.accept()
             self.card.set_hover(True)
+        else:
+            e.ignore()
+
+    def on_drop(self, e):
+        self.card.set_hover(False)
+        paths = paths_from_mime(e.mimeData())
+        log(f"drop: {paths}")
+        e.setDropAction(Qt.CopyAction)
+        e.accept()
+        if paths and not any(is_pdf(p) for p in paths) and not self.worker:
+            self.card.status.setText("Seuls les fichiers PDF sont acceptés.")
+        self.add_files(paths)
+
+    def dragEnterEvent(self, e):
+        self.on_drag(e)
+
+    def dragMoveEvent(self, e):
+        self.on_drag(e)
 
     def dragLeaveEvent(self, _):
         self.card.set_hover(False)
 
     def dropEvent(self, e):
-        self.card.set_hover(False)
-        self.add_files([u.toLocalFile() for u in e.mimeData().urls()])
+        self.on_drop(e)
 
     def choose(self):
         if self.worker:
@@ -284,7 +365,8 @@ class App(QApplication):
 
     def event(self, e):
         if e.type() == QEvent.FileOpen:
-            path = e.file()
+            path = resolve_path(e.file())
+            log(f"open: {path}")
             if self.window:
                 self.window.add_files([path])
             else:
