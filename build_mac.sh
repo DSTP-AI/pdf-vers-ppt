@@ -12,7 +12,7 @@ pip install -r requirements.txt
 rm -rf build dist
 APP="dist/PDF vers PPT.app"
 pyinstaller --noconfirm --windowed --name "PDF vers PPT" \
-  --target-arch arm64 \
+  --target-arch "${ARCH:-arm64}" \
   --icon assets/icon.icns \
   --add-data "assets:assets" \
   --osx-bundle-identifier fr.dstp.pdfversppt \
@@ -33,5 +33,5 @@ PL="$APP/Contents/Info.plist"
 # signature ad hoc (nécessaire sur Apple Silicon) + retrait de la quarantaine
 codesign --force --deep --sign - "$APP"
 xattr -cr "$APP"
-cd dist && ditto -c -k --keepParent "PDF vers PPT.app" "PDF-vers-PPT-mac-arm64.zip"
+cd dist && ditto -c -k --keepParent "PDF vers PPT.app" "PDF-vers-PPT-mac-${ARCH:-arm64}.zip"
 echo "OK : dist/PDF vers PPT.app"

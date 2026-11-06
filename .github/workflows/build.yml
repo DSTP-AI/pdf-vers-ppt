@@ -7,7 +7,17 @@ on:
 
 jobs:
   mac:
-    runs-on: macos-15   # Apple Silicon (arm64)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, arch: arm64 }
+          - { os: macos-26, arch: arm64 }
+          - { os: macos-13, arch: x86_64 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      ARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -15,8 +25,8 @@ jobs:
       - run: bash build_mac.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: PDF-vers-PPT-mac-arm64
-          path: dist/PDF-vers-PPT-mac-arm64.zip
+          name: PDF-vers-PPT-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/PDF-vers-PPT-mac-${{ matrix.arch }}.zip
 
   windows:
     runs-on: windows-latest
